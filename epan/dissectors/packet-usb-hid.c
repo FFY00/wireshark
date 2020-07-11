@@ -130,6 +130,8 @@ static int hf_usbhid_boot_report_mouse_y_displacement = -1;
 static int hf_usbhid_boot_report_mouse_horizontal_scroll_wheel = -1;
 static int hf_usbhid_boot_report_mouse_vertical_scroll_wheel = -1;
 static int hf_usbhid_data = -1;
+static int hf_usbhid_vendor_data = -1;
+static int hf_usbhid_report_id = -1;
 
 static const true_false_string tfs_mainitem_bit0 = {"Constant", "Data"};
 static const true_false_string tfs_mainitem_bit1 = {"Variable", "Array"};
@@ -4596,17 +4598,58 @@ dissect_usb_hid_control_class_intf(tvbuff_t *tvb, packet_info *pinfo,
 
 /* Dissect USB HID data/reports */
 static gint
-dissect_usb_hid_data(tvbuff_t *tvb, packet_info *pinfo _U_, proto_tree *tree, void *data _U_)
+dissect_usb_hid_data(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
 {
-    guint offset = 0;
+    guint offset = 0, hid_bit_offset;
     proto_item *hid_ti;
-    proto_tree _U_ *hid_tree;
+    proto_tree *hid_tree;
+    wmem_array_t *fields;
+    usb_conv_info_t *usb_data = (usb_conv_info_t*) data;
+    report_descriptor_t *rdesc = get_report_descriptor(pinfo, usb_data);
     guint remaining = tvb_reported_length_remaining(tvb, offset);
 
     if (remaining) {
         hid_ti = proto_tree_add_item(tree, hf_usbhid_data, tvb, offset, -1, ENC_NA);
         hid_tree = proto_item_add_subtree(hid_ti, ett_usb_hid_data);
+        hid_bit_offset = offset * 8;
         offset += remaining;
+        guint8 report_id = tvb_get_bits8(tvb, hid_bit_offset, 8);
+
+        if (rdesc) {
+            if (rdesc->uses_report_id) {
+                proto_tree_add_item(hid_tree, hf_usbhid_report_id, tvb, hid_bit_offset / 8, 1, ENC_NA);
+                hid_bit_offset += 8;
+            }
+
+            if (usb_data->direction == P2P_DIR_RECV)
+                fields = rdesc->fields_in;
+            else
+                fields = rdesc->fields_out;
+
+            for(unsigned int i = 0; i < wmem_array_get_count(fields); i++) {
+                hid_field_t *field = (hid_field_t*) wmem_array_index(fields, i);
+
+                /* skip items with invalid report IDs */
+                if (rdesc->uses_report_id && field->report_id != report_id)
+                    continue;
+
+                /* vendor data (0xff00 - 0xffff) */
+                if ((field->usage_page & 0xff00) == 0xff00) {
+                    unsigned int data_size = field->report_size * field->report_count;
+
+                    proto_tree_add_bits_item(hid_tree, hf_usbhid_vendor_data, tvb, hid_bit_offset, data_size, ENC_NA);
+                    hid_bit_offset += data_size;
+                }
+
+                switch (field->usage_page)
+                {
+                    /* TODO */
+
+                    default:
+                        break;
+                }
+            }
+        }
     }
 
     return offset;
@@ -5085,6 +5128,14 @@ proto_register_usb_hid(void)
 
         { &hf_usbhid_data,
             { "HID Data", "usbhid.data", FT_BYTES, BASE_NONE,
+                NULL, 0x00, NULL, HFILL }},
+
+        { &hf_usbhid_vendor_data,
+            { "Vendor Data", "usbhid.data.vendor", FT_BYTES, BASE_NONE,
+                NULL, 0x00, NULL, HFILL }},
+
+        { &hf_usbhid_report_id,
+            { "Report ID", "usbhid.data.report_id", FT_UINT8, BASE_HEX,
                 NULL, 0x00, NULL, HFILL }},
     };
 
