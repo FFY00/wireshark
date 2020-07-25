@@ -11,6 +11,8 @@
 
 
 #include <epan/packet.h>
+#include "wsutil/sign_ext.h"
+#include "wsutil/pint.h"
 #include "packet-usb.h"
 #include "packet-usb-hid.h"
 #include "packet-btsdp.h"
@@ -134,6 +136,20 @@ static int hf_usbhid_data = -1;
 static int hf_usbhid_unknown_data = -1;
 static int hf_usbhid_vendor_data = -1;
 static int hf_usbhid_report_id = -1;
+static int hf_usbhid_axis_x = -1;
+static int hf_usbhid_axis_y = -1;
+static int hf_usbhid_axis_z = -1;
+static int hf_usbhid_axis_rx = -1;
+static int hf_usbhid_axis_ry = -1;
+static int hf_usbhid_axis_rz = -1;
+static int hf_usbhid_axis_slider = -1;
+static int hf_usbhid_axis_vx = -1;
+static int hf_usbhid_axis_vy = -1;
+static int hf_usbhid_axis_vz = -1;
+static int hf_usbhid_axis_vbrx = -1;
+static int hf_usbhid_axis_vbry = -1;
+static int hf_usbhid_axis_vbrz = -1;
+static int hf_usbhid_axis_vno = -1;
 
 static const true_false_string tfs_mainitem_bit0 = {"Constant", "Data"};
 static const true_false_string tfs_mainitem_bit1 = {"Variable", "Array"};
@@ -195,6 +211,10 @@ static wmem_tree_t *report_descriptors = NULL;
 #define HID_MAIN_BUFFERED_BYTES (1 << 8) /* bit field / buferred bytes      */
 
 
+#define HID_MAIN_ARRAY          (0 << 1)
+#define HID_MAIN_VARIABLE       (1 << 1)
+
+
 #define HID_USAGE_UNSET         0
 #define HID_USAGE_SINGLE        1
 #define HID_USAGE_RANGE         2
@@ -232,6 +252,22 @@ struct _report_descriptor {
 
     report_descriptor_t    *next;
 };
+
+#define USBHID_GENERIC_DESKTOP_CONTROLS_X           0x0030
+#define USBHID_GENERIC_DESKTOP_CONTROLS_Y           0x0031
+#define USBHID_GENERIC_DESKTOP_CONTROLS_Z           0x0032
+#define USBHID_GENERIC_DESKTOP_CONTROLS_RX          0x0033
+#define USBHID_GENERIC_DESKTOP_CONTROLS_RY          0x0034
+#define USBHID_GENERIC_DESKTOP_CONTROLS_RZ          0x0035
+#define USBHID_GENERIC_DESKTOP_CONTROLS_SLIDER      0x0036
+
+#define USBHID_GENERIC_DESKTOP_CONTROLS_VX          0x0040
+#define USBHID_GENERIC_DESKTOP_CONTROLS_VY          0x0041
+#define USBHID_GENERIC_DESKTOP_CONTROLS_VZ          0x0042
+#define USBHID_GENERIC_DESKTOP_CONTROLS_VBRX        0x0043
+#define USBHID_GENERIC_DESKTOP_CONTROLS_VBRY        0x0044
+#define USBHID_GENERIC_DESKTOP_CONTROLS_VBRZ        0x0045
+#define USBHID_GENERIC_DESKTOP_CONTROLS_VNO         0x0046
 
 /* HID class specific descriptor types */
 #define USB_DT_HID        0x21
@@ -4598,6 +4634,148 @@ dissect_usb_hid_control_class_intf(tvbuff_t *tvb, packet_info *pinfo,
     return tvb_captured_length(tvb);
 }
 
+/* unpack a HID logical report field */
+static int hid_unpack_logical(tvbuff_t *tvb, int bit_offset, guint32 size, gint32 min, gint32 *val)
+{
+    size_t bytes_length;
+    guint8 *bytes = tvb_get_bits_array(NULL, tvb, bit_offset, size, &bytes_length);
+
+    switch (size / 8)
+    {
+        case 0:
+        case 1:
+            *val = bytes[0];
+            break;
+
+        case 2:
+            *val = pletoh16(bytes);
+            break;
+
+        case 3:
+            *val = pletoh24(bytes);
+            break;
+
+        case 4:
+            *val = pletoh32(bytes);
+            break;
+
+        default:
+            goto err;
+    }
+
+    if (min < 0)
+        *val = ws_sign_ext32(*val, size);
+
+    wmem_free(NULL, bytes);
+    return 0;
+
+err:
+    wmem_free(NULL, bytes);
+    return -1;
+}
+
+static gint
+dissect_usb_hid_int_dynamic_value_variable(tvbuff_t *tvb, proto_tree *tree, hid_field_t *field,
+        int *bit_offset, int hf)
+{
+    gint32 val = 0;
+
+    if (hid_unpack_logical(tvb, *bit_offset, field->report_size, field->logical_min, &val))
+        return -1;
+
+    proto_tree_add_int_bits_format_value(tree, hf, tvb, *bit_offset, field->report_size, val, "%d", val);
+    *bit_offset += field->report_size;
+
+    return 0;
+}
+
+/* dissect the Generic Desktop Controls (0x0001) usage page */
+static gint
+dissect_usb_hid_generic_desktop_controls_page(tvbuff_t *tvb, packet_info _U_ *pinfo,
+        proto_tree *tree, hid_field_t *field, int *bit_offset)
+{
+    gint ret = 0;
+    guint32 usage;
+    unsigned int usage_count = wmem_array_get_count(field->usages);
+
+    if ((field->properties & HID_MAIN_TYPE) != HID_MAIN_VARIABLE)
+        return -1;
+
+    if (usage_count != field->report_count)
+        return -1;
+
+    for(unsigned int i = 0; i < usage_count; i++) {
+        usage = *((guint32*) wmem_array_index(field->usages, i));
+        switch (usage)
+        {
+            case USBHID_GENERIC_DESKTOP_CONTROLS_X:
+                ret = dissect_usb_hid_int_dynamic_value_variable(tvb, tree, field, bit_offset, hf_usbhid_axis_x);
+                break;
+
+            case USBHID_GENERIC_DESKTOP_CONTROLS_Y:
+                ret = dissect_usb_hid_int_dynamic_value_variable(tvb, tree, field, bit_offset, hf_usbhid_axis_y);
+                break;
+
+            case USBHID_GENERIC_DESKTOP_CONTROLS_Z:
+                ret = dissect_usb_hid_int_dynamic_value_variable(tvb, tree, field, bit_offset, hf_usbhid_axis_z);
+                break;
+
+            case USBHID_GENERIC_DESKTOP_CONTROLS_RX:
+                ret = dissect_usb_hid_int_dynamic_value_variable(tvb, tree, field, bit_offset, hf_usbhid_axis_rx);
+                break;
+
+            case USBHID_GENERIC_DESKTOP_CONTROLS_RY:
+                ret = dissect_usb_hid_int_dynamic_value_variable(tvb, tree, field, bit_offset, hf_usbhid_axis_ry);
+                break;
+
+            case USBHID_GENERIC_DESKTOP_CONTROLS_RZ:
+                ret = dissect_usb_hid_int_dynamic_value_variable(tvb, tree, field, bit_offset, hf_usbhid_axis_rz);
+                break;
+
+            case USBHID_GENERIC_DESKTOP_CONTROLS_SLIDER:
+                ret = dissect_usb_hid_int_dynamic_value_variable(tvb, tree, field, bit_offset, hf_usbhid_axis_slider);
+                break;
+
+            case USBHID_GENERIC_DESKTOP_CONTROLS_VX:
+                ret = dissect_usb_hid_int_dynamic_value_variable(tvb, tree, field, bit_offset, hf_usbhid_axis_vx);
+                break;
+
+            case USBHID_GENERIC_DESKTOP_CONTROLS_VY:
+                ret = dissect_usb_hid_int_dynamic_value_variable(tvb, tree, field, bit_offset, hf_usbhid_axis_vy);
+                break;
+
+            case USBHID_GENERIC_DESKTOP_CONTROLS_VZ:
+                ret = dissect_usb_hid_int_dynamic_value_variable(tvb, tree, field, bit_offset, hf_usbhid_axis_vz);
+                break;
+
+            case USBHID_GENERIC_DESKTOP_CONTROLS_VBRX:
+                ret = dissect_usb_hid_int_dynamic_value_variable(tvb, tree, field, bit_offset, hf_usbhid_axis_vbrx);
+                break;
+
+            case USBHID_GENERIC_DESKTOP_CONTROLS_VBRY:
+                ret = dissect_usb_hid_int_dynamic_value_variable(tvb, tree, field, bit_offset, hf_usbhid_axis_vbry);
+                break;
+
+            case USBHID_GENERIC_DESKTOP_CONTROLS_VBRZ:
+                ret = dissect_usb_hid_int_dynamic_value_variable(tvb, tree, field, bit_offset, hf_usbhid_axis_vbrz);
+                break;
+
+            case USBHID_GENERIC_DESKTOP_CONTROLS_VNO:
+                ret = dissect_usb_hid_int_dynamic_value_variable(tvb, tree, field, bit_offset, hf_usbhid_axis_vno);
+                break;
+
+            default:
+                proto_tree_add_bits_item(tree, hf_usbhid_unknown_data, tvb, *bit_offset, field->report_size, ENC_NA);
+                break;
+        }
+
+        if (ret)
+            return ret;
+    }
+
+    return 0;
+}
+
 /* Dissect USB HID data/reports */
 static gint
 dissect_usb_hid_data(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
@@ -4644,7 +4822,9 @@ dissect_usb_hid_data(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *
                 } else {
                     switch (field->usage_page)
                     {
-                        /* TODO */
+                        case GENERIC_DESKTOP_CONTROLS_PAGE:
+                            ret = dissect_usb_hid_generic_desktop_controls_page(tvb, pinfo, hid_tree, field, &hid_bit_offset);
+                            break;
 
                         default:
                             ret = -1;
@@ -4661,7 +4841,6 @@ dissect_usb_hid_data(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *
                             proto_tree_add_uint_bits_format_value(unk_tree, hf_usb_hid_localitem_usage, tvb, hid_bit_offset, data_size,
                                     usage, "%s", get_usage_page_item_string(field->usage_page, usage));
                         }
-
                         hid_bit_offset += data_size;
                     }
                 }
@@ -5157,6 +5336,62 @@ proto_register_usb_hid(void)
 
         { &hf_usbhid_report_id,
             { "Report ID", "usbhid.data.report_id", FT_UINT8, BASE_HEX,
+                NULL, 0x00, NULL, HFILL }},
+
+        { &hf_usbhid_axis_x,
+            { "X Axis", "usbhid.data.axis.x", FT_INT32, BASE_DEC,
+                NULL, 0x00, NULL, HFILL }},
+
+        { &hf_usbhid_axis_y,
+            { "Y Axis", "usbhid.data.axis.y", FT_INT32, BASE_DEC,
+                NULL, 0x00, NULL, HFILL }},
+
+        { &hf_usbhid_axis_z,
+            { "Z Axis", "usbhid.data.axis.z", FT_INT32, BASE_DEC,
+                NULL, 0x00, NULL, HFILL }},
+
+        { &hf_usbhid_axis_rx,
+            { "Rz Axis", "usbhid.data.axis.rx", FT_INT32, BASE_DEC,
+                NULL, 0x00, NULL, HFILL }},
+
+        { &hf_usbhid_axis_ry,
+            { "Ry Axis", "usbhid.data.axis.ry", FT_INT32, BASE_DEC,
+                NULL, 0x00, NULL, HFILL }},
+
+        { &hf_usbhid_axis_rz,
+            { "Rz Axis", "usbhid.data.axis.rz", FT_INT32, BASE_DEC,
+                NULL, 0x00, NULL, HFILL }},
+
+        { &hf_usbhid_axis_slider,
+            { "Slider Axis", "usbhid.data.axis.slider", FT_INT32, BASE_DEC,
+                NULL, 0x00, NULL, HFILL }},
+
+        { &hf_usbhid_axis_vx,
+            { "Vz Axis", "usbhid.data.axis.vx", FT_INT32, BASE_DEC,
+                NULL, 0x00, NULL, HFILL }},
+
+        { &hf_usbhid_axis_vy,
+            { "Vy Axis", "usbhid.data.axis.vy", FT_INT32, BASE_DEC,
+                NULL, 0x00, NULL, HFILL }},
+
+        { &hf_usbhid_axis_vz,
+            { "Vz Axis", "usbhid.data.axis.vz", FT_INT32, BASE_DEC,
+                NULL, 0x00, NULL, HFILL }},
+
+        { &hf_usbhid_axis_vbrx,
+            { "Vbrz Axis", "usbhid.data.axis.vbrx", FT_INT32, BASE_DEC,
+                NULL, 0x00, NULL, HFILL }},
+
+        { &hf_usbhid_axis_vbry,
+            { "Vbry Axis", "usbhid.data.axis.vbry", FT_INT32, BASE_DEC,
+                NULL, 0x00, NULL, HFILL }},
+
+        { &hf_usbhid_axis_vbrz,
+            { "Vbrz Axis", "usbhid.data.axis.vbrz", FT_INT32, BASE_DEC,
+                NULL, 0x00, NULL, HFILL }},
+
+        { &hf_usbhid_axis_vno,
+            { "Vno Axis", "usbhid.data.axis.vno", FT_INT32, BASE_DEC,
                 NULL, 0x00, NULL, HFILL }},
     };
 
