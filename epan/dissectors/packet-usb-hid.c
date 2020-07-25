@@ -78,6 +78,7 @@ static gint ett_usb_hid_item_header = -1;
 static gint ett_usb_hid_wValue = -1;
 static gint ett_usb_hid_descriptor = -1;
 static gint ett_usb_hid_data = -1;
+static gint ett_usb_hid_unknown_data = -1;
 
 static int hf_usb_hid_request = -1;
 static int hf_usb_hid_value = -1;
@@ -130,6 +131,7 @@ static int hf_usbhid_boot_report_mouse_y_displacement = -1;
 static int hf_usbhid_boot_report_mouse_horizontal_scroll_wheel = -1;
 static int hf_usbhid_boot_report_mouse_vertical_scroll_wheel = -1;
 static int hf_usbhid_data = -1;
+static int hf_usbhid_unknown_data = -1;
 static int hf_usbhid_vendor_data = -1;
 static int hf_usbhid_report_id = -1;
 
@@ -4601,8 +4603,8 @@ static gint
 dissect_usb_hid_data(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
 {
     guint offset = 0, hid_bit_offset;
-    proto_item *hid_ti;
-    proto_tree *hid_tree;
+    proto_item *hid_ti, *unk_ti;
+    proto_tree *hid_tree, *unk_tree;
     wmem_array_t *fields;
     usb_conv_info_t *usb_data = (usb_conv_info_t*) data;
     report_descriptor_t *rdesc = get_report_descriptor(pinfo, usb_data);
@@ -4614,6 +4616,7 @@ dissect_usb_hid_data(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *
         hid_bit_offset = offset * 8;
         offset += remaining;
         guint8 report_id = tvb_get_bits8(tvb, hid_bit_offset, 8);
+        gint ret;
 
         if (rdesc) {
             if (rdesc->uses_report_id) {
@@ -4628,6 +4631,7 @@ dissect_usb_hid_data(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *
 
             for(unsigned int i = 0; i < wmem_array_get_count(fields); i++) {
                 hid_field_t *field = (hid_field_t*) wmem_array_index(fields, i);
+                unsigned int data_size = field->report_size * field->report_count;
 
                 /* skip items with invalid report IDs */
                 if (rdesc->uses_report_id && field->report_id != report_id)
@@ -4635,18 +4639,31 @@ dissect_usb_hid_data(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *
 
                 /* vendor data (0xff00 - 0xffff) */
                 if ((field->usage_page & 0xff00) == 0xff00) {
-                    unsigned int data_size = field->report_size * field->report_count;
-
                     proto_tree_add_bits_item(hid_tree, hf_usbhid_vendor_data, tvb, hid_bit_offset, data_size, ENC_NA);
                     hid_bit_offset += data_size;
-                }
+                } else {
+                    switch (field->usage_page)
+                    {
+                        /* TODO */
 
-                switch (field->usage_page)
-                {
-                    /* TODO */
+                        default:
+                            ret = -1;
+                            break;
+                    }
 
-                    default:
-                        break;
+                    if (ret) {
+                        unk_ti = proto_tree_add_bits_item(hid_tree, hf_usbhid_unknown_data, tvb, hid_bit_offset, data_size, ENC_NA);
+                        proto_item_append_text(unk_ti, " (%s)", get_usage_page_string(field->usage_page));
+
+                        unk_tree = proto_item_add_subtree(unk_ti, ett_usb_hid_unknown_data);
+                        for(unsigned int j = 0; j < wmem_array_get_count(field->usages); j++) {
+                            guint32 usage = *((guint32*) wmem_array_index(field->usages, j));
+                            proto_tree_add_uint_bits_format_value(unk_tree, hf_usb_hid_localitem_usage, tvb, hid_bit_offset, data_size,
+                                    usage, "%s", get_usage_page_item_string(field->usage_page, usage));
+                        }
+
+                        hid_bit_offset += data_size;
+                    }
                 }
             }
         }
@@ -5130,6 +5147,10 @@ proto_register_usb_hid(void)
             { "HID Data", "usbhid.data", FT_BYTES, BASE_NONE,
                 NULL, 0x00, NULL, HFILL }},
 
+        { &hf_usbhid_unknown_data,
+            { "Unknown", "usbhid.data.unknown", FT_BYTES, BASE_NONE,
+                NULL, 0x00, NULL, HFILL }},
+
         { &hf_usbhid_vendor_data,
             { "Vendor Data", "usbhid.data.vendor", FT_BYTES, BASE_NONE,
                 NULL, 0x00, NULL, HFILL }},
@@ -5144,7 +5165,8 @@ proto_register_usb_hid(void)
         &ett_usb_hid_item_header,
         &ett_usb_hid_wValue,
         &ett_usb_hid_descriptor,
-        &ett_usb_hid_data
+        &ett_usb_hid_data,
+        &ett_usb_hid_unknown_data
     };
 
     report_descriptors = wmem_tree_new_autoreset(wmem_epan_scope(), wmem_file_scope());
