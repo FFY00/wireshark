@@ -136,6 +136,7 @@ static int hf_usbhid_data = -1;
 static int hf_usbhid_unknown_data = -1;
 static int hf_usbhid_vendor_data = -1;
 static int hf_usbhid_report_id = -1;
+static int hf_usbhid_padding = -1;
 static int hf_usbhid_axis_x = -1;
 static int hf_usbhid_axis_y = -1;
 static int hf_usbhid_axis_z = -1;
@@ -4853,6 +4854,13 @@ dissect_usb_hid_data(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *
                 if (rdesc->uses_report_id && field->report_id != report_id)
                     continue;
 
+                /* if the item has no usages, it is padding - HID spec 6.2.2.9 */
+                if (wmem_array_get_count(field->usages) == 0) {
+                    proto_tree_add_bits_item(hid_tree, hf_usbhid_padding, tvb, hid_bit_offset, data_size, ENC_NA);
+                    hid_bit_offset += data_size;
+                    continue;
+                }
+
                 /* vendor data (0xff00 - 0xffff) */
                 if ((field->usage_page & 0xff00) == 0xff00) {
                     proto_tree_add_bits_item(hid_tree, hf_usbhid_vendor_data, tvb, hid_bit_offset, data_size, ENC_NA);
@@ -5378,6 +5386,10 @@ proto_register_usb_hid(void)
 
         { &hf_usbhid_report_id,
             { "Report ID", "usbhid.data.report_id", FT_UINT8, BASE_HEX,
+                NULL, 0x00, NULL, HFILL }},
+
+        { &hf_usbhid_padding,
+            { "Padding", "usbhid.data.padding", FT_BYTES, BASE_NONE,
                 NULL, 0x00, NULL, HFILL }},
 
         { &hf_usbhid_axis_x,
