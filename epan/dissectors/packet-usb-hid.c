@@ -150,6 +150,7 @@ static int hf_usbhid_axis_vbrx = -1;
 static int hf_usbhid_axis_vbry = -1;
 static int hf_usbhid_axis_vbrz = -1;
 static int hf_usbhid_axis_vno = -1;
+static int hf_usbhid_button = -1;
 
 static const true_false_string tfs_mainitem_bit0 = {"Constant", "Data"};
 static const true_false_string tfs_mainitem_bit1 = {"Variable", "Array"};
@@ -4776,6 +4777,43 @@ dissect_usb_hid_generic_desktop_controls_page(tvbuff_t *tvb, packet_info _U_ *pi
     return 0;
 }
 
+/* dissect the Button (0x0009) usage page */
+static gint
+dissect_usb_hid_button_page(tvbuff_t *tvb, packet_info _U_ *pinfo,
+        proto_tree *tree, hid_field_t *field, int *bit_offset)
+{
+    gint32 val = 0;
+    unsigned int usage_count = wmem_array_get_count(field->usages);
+    guint32 usage;
+    proto_item *ti;
+
+    if ((field->properties & HID_MAIN_TYPE) != HID_MAIN_VARIABLE)
+        return -1;
+
+    for(unsigned int i = 0; i < usage_count; i++) {
+        usage = *((guint32*) wmem_array_index(field->usages, i));
+
+        if (hid_unpack_logical(tvb, *bit_offset, field->report_size, field->logical_min, &val))
+            return -1;
+
+        ti = proto_tree_add_boolean_bits_format_value(tree, hf_usbhid_button, tvb, *bit_offset, field->report_size, val, "%u", usage);
+        *bit_offset += field->report_size;
+
+        if (usage == 0)
+            proto_item_append_text(ti, " (No button pressed)");
+        else if (usage == 1)
+            proto_item_append_text(ti, " (primary/trigger)");
+        else if (usage == 2)
+            proto_item_append_text(ti, " (secondary)");
+        else if (usage == 2)
+            proto_item_append_text(ti, " (tertiary)");
+
+        proto_item_append_text(ti, " = %s", val ? "DOWN" : "UP");
+    }
+
+    return 0;
+}
+
 /* Dissect USB HID data/reports */
 static gint
 dissect_usb_hid_data(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
@@ -4824,6 +4862,10 @@ dissect_usb_hid_data(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *
                     {
                         case GENERIC_DESKTOP_CONTROLS_PAGE:
                             ret = dissect_usb_hid_generic_desktop_controls_page(tvb, pinfo, hid_tree, field, &hid_bit_offset);
+                            break;
+
+                        case BUTTON_PAGE:
+                            ret = dissect_usb_hid_button_page(tvb, pinfo, hid_tree, field, &hid_bit_offset);
                             break;
 
                         default:
@@ -5392,6 +5434,10 @@ proto_register_usb_hid(void)
 
         { &hf_usbhid_axis_vno,
             { "Vno Axis", "usbhid.data.axis.vno", FT_INT32, BASE_DEC,
+                NULL, 0x00, NULL, HFILL }},
+
+        { &hf_usbhid_button,
+            { "Button", "usbhid.data.button", FT_BOOLEAN, 1,
                 NULL, 0x00, NULL, HFILL }},
     };
 
